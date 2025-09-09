@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>한국 여행 추천 (서울역 기준)</title>
+  <style>
+    :root { --bg:#f8fafc; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e5e7eb; --accent:#2563eb; }
+    *{ box-sizing:border-box }
+    body{ margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji"; background:var(--bg); color:var(--ink); }
+    .wrap{ max-width:1100px; margin:0 auto; padding:24px; }
+    header{ display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:12px; }
+    h1{ margin:0; font-size:clamp(22px,3vw,28px); }
+    p.lead{ color:var(--muted); margin:6px 0 0; }
+    .row{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    button{ appearance:none; border:1px solid var(--line); background:#fff; color:var(--ink); padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600; }
+    button.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
+    button.ghost{ background:transparent; }
+    button:disabled{ opacity:.6; cursor:not-allowed; }
+    input{ width:100%; max-width:360px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+    .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(280px,1fr)); gap:12px; }
+    .pill{ padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:12px; border:1px solid #c7d2fe; }
+    .meta{ color:var(--muted); font-size:13px; }
+    .kvs{ margin:8px 0 0; display:grid; grid-template-columns:140px 1fr; gap:6px 10px; font-size:14px; }
+    .kvs .key{ color:var(--muted); }
+    .title{ font-weight:700; font-size:18px; }
+    .spacer{ height:10px; }
+    .spot{ border:1px dashed var(--line); border-radius:12px; padding:10px; }
+    footer{ color:var(--muted); font-size:13px; margin-top:18px; }
+    details summary{ cursor:pointer; color:var(--accent); }
+    .card .actions{ margin-top:10px; display:flex; gap:8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>한국 여행 추천 (서울역 기준)</h1>
+        <p class="lead">도시·명소 데이터(연평균기온 2011–2020)와 거리/철도 정보를 바탕으로 3곳을 추천합니다. *값은 근사치</p>
+      </div>
+      <div class="row">
+        <button id="btn-roll" class="primary">추천 3곳 뽑기</button>
+        <button id="btn-fav-selected">현재 3곳 모두 즐겨찾기</button>
+        <button id="btn-export" class="ghost">즐겨찾기 CSV</button>
+      </div>
+    </header>
+
+    <div class="spacer"></div>
+
+    <div class="row card" style="gap:10px; align-items:center;">
+      <input id="picker" list="all-list" placeholder="빠른 찾기 (도시·명소 이름 입력)" style="flex:1; max-width:520px;" />
+      <datalist id="all-list"></datalist>
+      <button id="btn-pick" class="primary">선택</button>
+      <button id="btn-clear" class="ghost">지우기</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <section id="current" class="grid" aria-live="polite"></section>
+
+    <div class="spacer"></div>
+
+    <div class="row">
+      <input id="search" placeholder="즐겨찾기 검색 (예: 부산, 경복궁)" />
+    </div>
+
+    <h3>즐겨찾기</h3>
+    <section id="favorites" class="grid" aria-live="polite"></section>
+
+    <footer>
+      출처/근거: 기상청 ‘2011–2020 평년값’(연평균기온, 관측소 기준), 코레일(KTX 노선·운행), 한국관광공사 ‘대한민국 구석구석’(명소 설명), KOSIS(인구·지역 통계). 값은 반올림·근사치이며 일부는 인근 지점으로 대체될 수 있습니다. 최신 운행·요금은 코레일에서 확인하세요.
+    </footer>
+  </div>
+
+  <script>
+  // ====== 좌표/거리 유틸 ======
+  const SEOUL_ST = { name:"서울역", lat:37.5547, lon:126.9723 };
+  function toRad(d){ return d*Math.PI/180; }
+  function haversine(a,b){
+    const R=6371; const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
+    const s = Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLon/2)**2;
+    return R*2*Math.asin(Math.sqrt(s)); // km
+  }
+  function fmtKm(km){ return `약 ${Math.round(km)} km` }
+
+  // ====== 데이터 스키마 ======
+  // item: {type:'city'|'place', name:'부산', sido:'부산광역시', lat, lon, tempC:15.5, best:'봄·가을', food:'밀면, 돼지국밥',
+  // ktx:{on:true, note:'경부고속선', fastestMin:135}, highlights:[{name:'광안리해변', desc:'야경이 아름다운 해변'}]}
+
+  const CITIES = [
+    {type:'city', name:'서울', sido:'서울특별시', lat:37.5665, lon:126.9780, tempC:13.5, best:'봄(4–5월)·가을(9–10월)', food:'평양냉면, 김치찌개', ktx:{on:true, note:'서울역 허브', fastestMin:0}, highlights:[{name:'경복궁',desc:'조선의 정궁'},{name:'남산타워',desc:'서울 야경 명소'},{name:'북촌한옥마을',desc:'도심 한옥거리'}]},
+    {type:'city', name:'부산', sido:'부산광역시', lat:35.1796, lon:129.0756, tempC:15.5, best:'봄·가을, 여름(해변)', food:'밀면, 돼지국밥', ktx:{on:true, note:'경부고속선', fastestMin:135}, highlights:[{name:'해운대',desc:'대표 해변'},{name:'자갈치',desc:'수산시장·먹거리'},{name:'감천문화마을',desc:'언덕 마을 풍경'}]},
+    {type:'city', name:'인천', sido:'인천광역시', lat:37.4563, lon:126.7052, tempC:12.8, best:'봄·가을', food:'짜장면(차이나타운)', ktx:{on:false, note:'공항·광역철도 중심'}, highlights:[{name:'차이나타운',desc:'근대거리'},{name:'송도센트럴파크',desc:'수변 산책'}]},
+    {type:'city', name:'대구', sido:'대구광역시', lat:35.8714, lon:128.6014, tempC:14.8, best:'봄·가을', food:'막창, 따로국밥', ktx:{on:true, note:'경부고속선', fastestMin:98}, highlights:[{name:'83타워',desc:'전망·야경'},{name:'동성로',desc:'쇼핑거리'}]},
+    {type:'city', name:'대전', sido:'대전광역시', lat:36.3504, lon:127.3845, tempC:13.6, best:'봄·가을', food:'성심당 빵', ktx:{on:true, note:'경부고속선 분기', fastestMin:50}, highlights:[{name:'엑스포과학공원',desc:'과학 테마'},{name:'한밭수목원',desc:'도심 공원'}]},
+    {type:'city', name:'광주', sido:'광주광역시', lat:35.1595, lon:126.8526, tempC:14.7, best:'봄·가을', food:'한정식, 떡갈비', ktx:{on:true, note:'호남고속선(용산 출발 多)', fastestMin:158}, highlights:[{name:'무등산',desc:'국립공원'},{name:'국립아시아문화전당',desc:'문화 복합'}]},
+    {type:'city', name:'울산', sido:'울산광역시', lat:35.5384, lon:129.3114, tempC:15.0, best:'봄·가을', food:'울산불고기', ktx:{on:true, note:'경부고속선', fastestMin:130}, highlights:[{name:'대왕암공원',desc:'기암·해변'},{name:'태화강국가정원',desc:'대나무 숲'}]},
+    {type:'city', name:'수원', sido:'경기도', lat:37.2636, lon:127.0286, tempC:13.4, best:'봄·가을', food:'갈비', ktx:{on:false, note:'수원역 일반·광역철'}, highlights:[{name:'수원화성',desc:'세계문화유산'}]},
+    {type:'city', name:'성남', sido:'경기도', lat:37.4200, lon:127.1266, tempC:13.3, best:'봄·가을', food:'분당 카페·맛집', ktx:{on:false, note:'분당·신분당선'}, highlights:[{name:'탄천',desc:'자전거·산책로'}]},
+    {type:'city', name:'고양', sido:'경기도', lat:37.6584, lon:126.8320, tempC:13.1, best:'봄·가을', food:'일산 호수공원 주변', ktx:{on:false, note:'경의중앙선'}, highlights:[{name:'호수공원',desc:'대형 호수공원'}]},
+    {type:'city', name:'용인', sido:'경기도', lat:37.2410, lon:127.1770, tempC:13.0, best:'봄·가을', food:'에버랜드 먹거리', ktx:{on:false, note:'분당선·에버라인'}, highlights:[{name:'에버랜드',desc:'테마파크'}]},
+    {type:'city', name:'창원', sido:'경상남도', lat:35.2270, lon:128.6811, tempC:15.0, best:'봄·가을', food:'아구찜', ktx:{on:true, note:'마산/창원중앙 역 경유', fastestMin:190}, highlights:[{name:'진해 군항제',desc:'벚꽃 명소'}]},
+    {type:'city', name:'청주', sido:'충청북도', lat:36.6424, lon:127.4890, tempC:13.3, best:'봄·가을', food:'청남대 주변 농가맛집', ktx:{on:false, note:'충북선·오송 환승'}, highlights:[{name:'상당산성',desc:'성곽·숲길'}]},
+    {type:'city', name:'전주', sido:'전라북도', lat:35.8242, lon:127.1480, tempC:13.7, best:'봄·가을', food:'비빔밥, 한정식', ktx:{on:true, note:'호남고속선(용산発 多)', fastestMin:110}, highlights:[{name:'한옥마을',desc:'전통 한옥 거리'}]},
+    {type:'city', name:'포항', sido:'경상북도', lat:36.0190, lon:129.3435, tempC:14.7, best:'봄·가을·여름(바다)', food:'물회', ktx:{on:true, note:'포항 KTX-이음/경부 연계', fastestMin:160}, highlights:[{name:'영일대해수욕장',desc:'도심 해변'}]},
+    {type:'city', name:'춘천', sido:'강원특별자치도', lat:37.8813, lon:127.7298, tempC:12.4, best:'봄·가을·겨울(눈)', food:'막국수·닭갈비', ktx:{on:false, note:'ITX-청춘'}, highlights:[{name:'남이섬(인접)',desc:'자연·산책'}]},
+    {type:'city', name:'강릉', sido:'강원특별자치도', lat:37.7519, lon:128.8761, tempC:14.0, best:'봄·가을·여름(바다)', food:'초당두부·커피', ktx:{on:true, note:'강릉선 KTX', fastestMin:120}, highlights:[{name:'안목해변',desc:'커피거리'}]},
+    {type:'city', name:'속초', sido:'강원특별자치도', lat:38.2070, lon:128.5919, tempC:13.6, best:'봄·가을·여름(바다)', food:'오징어순대·회', ktx:{on:false, note:'동해선(계획)/시외버스'}, highlights:[{name:'설악산(인접)',desc:'국립공원'}]},
+    {type:'city', name:'제주', sido:'제주특별자치도', lat:33.4996, lon:126.5312, tempC:17.0, best:'봄·가을·겨울(온난)', food:'흑돼지·갈치', ktx:{on:false, note:'항공 연결'}, highlights:[{name:'한라산',desc:'국립공원 화산섬'}]},
+    {type:'city', name:'여수', sido:'전라남도', lat:34.7604, lon:127.6622, tempC:15.1, best:'봄·가을·여름(바다)', food:'게장, 해산물', ktx:{on:false, note:'여천/순천 경유'}, highlights:[{name:'돌산대교',desc:'야경 드라이브'}]},
+    {type:'city', name:'통영', sido:'경상남도', lat:34.8544, lon:128.4330, tempC:15.0, best:'봄·가을·여름(바다)', food:'충무김밥·굴', ktx:{on:false, note:'부산/진주 연계'}, highlights:[{name:'동피랑',desc:'벽화마을'}]}
+  ];
+
+  const PLACES = [
+    {type:'place', name:'경복궁', sido:'서울', lat:37.5796, lon:126.9770, tempC:13.5, best:'봄·가을', desc:'조선 왕조의 법궁. 근정전·경회루 등 볼거리 풍부.', near:'서울'},
+    {type:'place', name:'창덕궁', sido:'서울', lat:37.5794, lon:126.9910, tempC:13.5, best:'봄·가을', desc:'후원이 아름다운 세계유산 궁궐.', near:'서울'},
+    {type:'place', name:'수원화성', sido:'경기도 수원', lat:37.2875, lon:127.0090, tempC:13.4, best:'봄·가을', desc:'정조의 개혁정신이 담긴 유네스코 세계유산.', near:'수원'},
+    {type:'place', name:'불국사', sido:'경북 경주', lat:35.7904, lon:129.3321, tempC:14.3, best:'봄·가을', desc:'통일신라 사찰, 다보탑·석가탑으로 유명.', near:'경주'},
+    {type:'place', name:'석굴암', sido:'경북 경주', lat:35.7945, lon:129.3499, tempC:14.3, best:'봄·가을', desc:'인공 석굴의 걸작, 본존불이 상징.', near:'경주'},
+    {type:'place', name:'한라산', sido:'제주', lat:33.3617, lon:126.5292, tempC:17.0, best:'가을·겨울(설경)·봄', desc:'한라산국립공원, 백록담 경관.', near:'제주'},
+    {type:'place', name:'성산일출봉', sido:'제주', lat:33.4590, lon:126.9427, tempC:17.0, best:'봄·가을', desc:'유네스코 세계자연유산, 일출 명소.', near:'제주'},
+    {type:'place', name:'설악산', sido:'강원 속초', lat:38.1704, lon:128.4737, tempC:13.0, best:'가을(단풍)·봄', desc:'설악산국립공원, 공룡능선·비선대.', near:'속초'},
+    {type:'place', name:'지리산', sido:'전남/전북/경남', lat:35.3381, lon:127.7298, tempC:12.8, best:'봄·가을', desc:'우리나라 최초 국립공원, 노고단·천왕봉.', near:'전주'},
+    {type:'place', name:'내장산', sido:'전북 정읍', lat:35.4896, lon:126.8838, tempC:13.3, best:'가을(단풍)', desc:'단풍 명산, 내장사·우화정.', near:'전주'},
+    {type:'place', name:'임진각(DMZ)', sido:'경기도 파주', lat:37.8923, lon:126.7355, tempC:13.0, best:'봄·가을', desc:'평화누리공원, 도라전망대 연계.', near:'서울'},
+    {type:'place', name:'낙안읍성', sido:'전남 순천', lat:34.9760, lon:127.3120, tempC:14.6, best:'봄·가을', desc:'전통 한옥이 보존된 민속마을.', near:'순천'},
+    {type:'place', name:'순천만국가정원', sido:'전남 순천', lat:34.9270, lon:127.4950, tempC:14.6, best:'봄·가을', desc:'갈대밭·정원 콘텐츠 풍부.', near:'순천'},
+    {type:'place', name:'보성녹차밭', sido:'전남 보성', lat:34.7254, lon:127.0809, tempC:14.4, best:'봄·초여름', desc:'초록 물결의 다원 풍경.', near:'순천'},
+    {type:'place', name:'동피랑', sido:'경남 통영', lat:34.8465, lon:128.4310, tempC:15.0, best:'봄·가을', desc:'바다와 벽화가 어우러진 언덕 마을.', near:'통영'},
+    {type:'place', name:'돌산대교', sido:'전남 여수', lat:34.7376, lon:127.7488, tempC:15.1, best:'봄·가을·여름', desc:'야경 명소, 드라이브 코스.', near:'여수'},
+    {type:'place', name:'오죽헌', sido:'강원 강릉', lat:37.7690, lon:128.8990, tempC:14.0, best:'봄·가을', desc:'신사임당·율곡 이이의 생가.', near:'강릉'},
+    {type:'place', name:'하회마을', sido:'경북 안동', lat:36.5386, lon:128.5180, tempC:13.7, best:'봄·가을', desc:'전통 양반마을, 세계유산.', near:'대구'},
+    {type:'place', name:'양떼목장', sido:'강원 평창', lat:37.6880, lon:128.7183, tempC:10.5, best:'여름·겨울(설경)', desc:'대관령 목장 풍경.', near:'강릉'}
+  ];
+
+  const ALL = [...CITIES, ...PLACES];
+
+  // ====== DOM ======
+  const $current = document.getElementById('current');
+  const $favs = document.getElementById('favorites');
+  const $roll = document.getElementById('btn-roll');
+  const $favAll = document.getElementById('btn-fav-selected');
+  const $export = document.getElementById('btn-export');
+  const $search = document.getElementById('search');
+  const $picker = document.getElementById('picker');
+  const $pickBtn = document.getElementById('btn-pick');
+  const $clearBtn = document.getElementById('btn-clear');
+  const $allList = document.getElementById('all-list');
+
+  const KEY = 'kr-travel-favs-v1';
+  let currentSet = pickThree();
+  let favorites = [];
+  try{ const raw=localStorage.getItem(KEY); if(raw) favorites=JSON.parse(raw); }catch{}
+
+  // ====== 선택/추천 로직 ======
+  function pickThree(){
+    // 1) 기준 도시 1개 랜덤, 2) 그 도시에 가장 가까운 명소 2곳
+    const city = CITIES[Math.floor(Math.random()*CITIES.length)];
+    const nearPlaces = PLACES
+      .map(p=>({p, d:haversine(city,p)}))
+      .sort((a,b)=>a.d-b.d)
+      .slice(0, 4) // 너무 가깝지 않으면 도시 바다/산 골고루 섞임
+      .map(x=>x.p);
+    const picks = [city, ...nearPlaces.slice(0,2)];
+    return picks;
+  }
+
+  function distanceFromSeoul(item){ return fmtKm(haversine(SEOUL_ST,item)); }
+
+  function ktxText(item){
+    if(!item.ktx) return '—';
+    if(!item.ktx.on) return `연결: × (${item.ktx.note})`;
+    const min = item.ktx.fastestMin||0; const t = min?`최단 약 ${Math.round(min/60)}시간 ${min%60?min%60+'분':''}`:'허브/연계';
+    return `연결: ○ · ${item.ktx.note}${min?` · ${t}`:''}`;
+  }
+
+  function vkLink(q){ return `https://korean.visitkorea.or.kr/search/search_list.do?keyword=${encodeURIComponent(q)}` }
+  function mapLink(q){ return `https://map.naver.com/v5/search/${encodeURIComponent(q)}` }
+
+  // ====== 렌더링 ======
+  function itemCardHTML(item){
+    const isCity = item.type==='city';
+    const km = distanceFromSeoul(item);
+    const tag = isCity? '도시' : '명소';
+    const sub = `${item.sido} · ${tag}`;
+    const foods = item.food? item.food : (isCity? '—' : '지역 먹거리 참고');
+    const hl = (item.highlights||[]).map(h=>`<div>• ${h.name} — ${h.desc}</div>`).join('');
+    const bodyHl = isCity && hl? `<div class="spot">${hl}</div>` : (item.desc? `<div class="spot">${item.desc}</div>` : '');
+    return `
+      <article class="card">
+        <div class="title">${item.name} <span class="pill">${tag}</span></div>
+        <div class="meta">${sub}</div>
+        <div class="kvs">
+          <div class="key">연평균 기온</div><div>${item.tempC? item.tempC.toFixed(1)+'℃ (2011–2020)': '—'}</div>
+          <div class="key">여행 최적 시즌</div><div>${item.best||'봄·가을'}</div>
+          <div class="key">서울역 기준 거리</div><div>${km}</div>
+          <div class="key">KTX</div><div>${ktxText(item)}</div>
+          <div class="key">대표 먹거리</div><div>${foods}</div>
+        </div>
+        ${bodyHl}
+        <div class="actions">
+          <button data-fav="${item.name}">♥ 즐겨찾기</button>
+          <a class="pill" href="${vkLink(item.name)}" target="_blank" rel="noopener">대한민국구석구석</a>
+          <a class="pill" href="${mapLink(item.name)}" target="_blank" rel="noopener">네이버지도</a>
+        </div>
+      </article>`;
+  }
+
+  function renderCurrent(){
+    $current.innerHTML = currentSet.map(itemCardHTML).join('');
+    // 개별 즐겨찾기 바인딩
+    $current.querySelectorAll('button[data-fav]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const name = btn.getAttribute('data-fav');
+        const item = ALL.find(x=>x.name===name);
+        if(!item) return;
+        if(!favorites.find(f=>f.name===name)){
+          favorites.unshift(item); persist(); renderFavs();
+        }
+      });
+    });
+  }
+
+  function renderFavs(){
+    const q = ($search.value||'').trim();
+    const list = q? favorites.filter(f=>f.name.includes(q)) : favorites;
+    if(!list.length){ $favs.innerHTML = '<div class="meta">즐겨찾기가 비어 있거나 검색 결과가 없습니다.</div>'; return; }
+    $favs.innerHTML = list.map(item=>`
+      <div class="card">
+        <div class="title">${item.name} <span class="pill">${item.type==='city'?'도시':'명소'}</span></div>
+        <div class="meta">${item.sido}</div>
+        <div class="kvs">
+          <div class="key">연평균 기온</div><div>${item.tempC? item.tempC.toFixed(1)+'℃ (2011–2020)':'—'}</div>
+          <div class="key">최적 시즌</div><div>${item.best||'봄·가을'}</div>
+          <div class="key">서울역 거리</div><div>${fmtKm(haversine(SEOUL_ST,item))}</div>
+        </div>
+        <div class="actions">
+          <button data-remove="${item.name}">삭제</button>
+          <a class="pill" href="${vkLink(item.name)}" target="_blank" rel="noopener">구석구석</a>
+          <a class="pill" href="${mapLink(item.name)}" target="_blank" rel="noopener">지도</a>
+        </div>
+      </div>
+    `).join('');
+    $favs.querySelectorAll('button[data-remove]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const name = btn.getAttribute('data-remove');
+        favorites = favorites.filter(f=>f.name!==name); persist(); renderFavs();
+      });
+    });
+  }
+
+  function persist(){ try{ localStorage.setItem(KEY, JSON.stringify(favorites)); }catch{} }
+
+  // ====== 이벤트 ======
+  document.getElementById('btn-roll').addEventListener('click', ()=>{ currentSet = pickThree(); renderCurrent(); });
+  $favAll.addEventListener('click', ()=>{
+    currentSet.forEach(item=>{ if(!favorites.find(f=>f.name===item.name)) favorites.unshift(item); });
+    favorites = favorites.slice(0, 300); persist(); renderFavs();
+  });
+  $export.addEventListener('click', ()=>{
+    if(!favorites.length){ alert('내보낼 즐겨찾기가 없습니다.'); return; }
+    const header = ['이름','유형','시/도','연평균기온(℃,2011–2020)','최적시즌','서울역거리(km)'];
+    const rows = favorites.map(i=>[
+      i.name, i.type, i.sido, i.tempC? i.tempC.toFixed(1):'', i.best||'', Math.round(haversine(SEOUL_ST,i))
+    ]);
+    const csv = [header.join(','), ...rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='즐겨찾기.csv'; a.click(); URL.revokeObjectURL(url);
+  });
+
+  function fillDatalist(){ $allList.innerHTML = ALL.map(i=>`<option value="${i.name}"></option>`).join(''); }
+  function selectByName(name){
+    if(!name) return; const exact = ALL.find(i=>i.name===name.trim());
+    const target = exact || ALL.find(i=>i.name.includes(name.trim()));
+    if(!target){ alert('해당 이름을 찾지 못했습니다.'); return; }
+    // 선택 항목 + 가까운 명소 2개로 현재 세트 구성
+    if(target.type==='city'){
+      const near = PLACES.map(p=>({p, d:haversine(target,p)})).sort((a,b)=>a.d-b.d).slice(0,2).map(x=>x.p);
+      currentSet = [target, ...near];
+    }else{
+      const nearCity = CITIES.map(c=>({c, d:haversine(target,c)})).sort((a,b)=>a.d-b.d)[0].c;
+      const another = PLACES.filter(p=>p.name!==target.name).sort((a,b)=>haversine(nearCity,a)-haversine(nearCity,b))[0];
+      currentSet = [nearCity, target, another];
+    }
+    renderCurrent();
+  }
+
+  $pickBtn.addEventListener('click', ()=>selectByName($picker.value));
+  $clearBtn.addEventListener('click', ()=>{ $picker.value=''; $picker.focus(); });
+  $picker.addEventListener('keydown', (e)=>{ if(e.key==='Enter') selectByName($picker.value); });
+
+  // 초기 렌더
+  fillDatalist();
+  renderCurrent();
+  renderFavs();
+  </script>
+</body>
+</html>
